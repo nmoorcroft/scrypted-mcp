@@ -5,19 +5,29 @@ import { execFile } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { z } from "zod";
 
 const PORT = 9584;
-// Scrypted Rebroadcast Plugin RTSP stream for Kitchen camera (device ID 28)
-// Set RTSP_URL env var to the rebroadcast path (mixin:28:rtspServerPathKey-0)
-const RTSP_URL = process.env.RTSP_URL;
-if (!RTSP_URL) throw new Error("RTSP_URL environment variable is required");
 
-function captureSnapshot() {
+// Camera definitions — RTSP URLs injected via environment variables
+const CAMERAS = {
+  back_garden:  { name: "Back Garden",  rtsp: process.env.RTSP_BACK_GARDEN },
+  doorbell:     { name: "Doorbell",     rtsp: process.env.RTSP_DOORBELL },
+  front_drive:  { name: "Front Drive",  rtsp: process.env.RTSP_FRONT_DRIVE },
+  kitchen:      { name: "Kitchen",      rtsp: process.env.RTSP_KITCHEN },
+  side_gate:    { name: "Side Gate",    rtsp: process.env.RTSP_SIDE_GATE },
+  utility_room: { name: "Utility Room", rtsp: process.env.RTSP_UTILITY_ROOM },
+};
+
+const missing = Object.entries(CAMERAS).filter(([, c]) => !c.rtsp).map(([k]) => `RTSP_${k.toUpperCase()}`);
+if (missing.length) throw new Error(`Missing environment variables: ${missing.join(", ")}`);
+
+function captureSnapshot(rtspUrl) {
   return new Promise((resolve, reject) => {
-    const tmpFile = join(tmpdir(), `kitchen_snap_${Date.now()}.jpg`);
+    const tmpFile = join(tmpdir(), `snap_${Date.now()}.jpg`);
     execFile(
       "ffmpeg",
-      ["-rtsp_transport", "tcp", "-i", RTSP_URL,
+      ["-rtsp_transport", "tcp", "-i", rtspUrl,
        "-frames:v", "1", "-q:v", "5", "-update", "1", tmpFile, "-y"],
       { timeout: 15000 },
       (error, _stdout, stderr) => {
@@ -41,15 +51,38 @@ const app = express();
 app.use(express.json());
 
 app.post("/mcp", async (req, res) => {
-  const server = new McpServer({ name: "scrypted-camera", version: "1.0.0" });
+  const server = new McpServer({ name: "scrypted-cameras", version: "2.0.0" });
 
+  // List all available cameras
   server.tool(
-    "get_kitchen_camera",
-    "Get a current snapshot from the kitchen camera. Use this to visually check what is happening in the kitchen — for example whether the dog is asleep, whether someone is in the kitchen, or what the dog is doing.",
+    "list_cameras",
+    "List all available cameras by name and ID.",
     {},
-    async () => {
+    async () => ({
+      content: [{
+        type: "text",
+        text: Object.entries(CAMERAS)
+          .map(([id, c]) => `${id}: ${c.name}`)
+          .join("\n")
+      }]
+    })
+  );
+
+  // Get a snapshot from a specific camera
+  server.tool(
+    "get_camera_snapshot",
+    "Get a live snapshot from a camera. Use list_cameras first to see available camera IDs.",
+    { camera_id: z.string().describe("Camera ID, e.g. kitchen, back_garden, doorbell") },
+    async ({ camera_id }) => {
+      const camera = CAMERAS[camera_id];
+      if (!camera) {
+        return {
+          content: [{ type: "text", text: `Unknown camera: ${camera_id}. Available: ${Object.keys(CAMERAS).join(", ")}` }],
+          isError: true
+        };
+      }
       try {
-        const imageBuffer = await captureSnapshot();
+        const imageBuffer = await captureSnapshot(camera.rtsp);
         return {
           content: [{
             type: "image",
@@ -59,7 +92,7 @@ app.post("/mcp", async (req, res) => {
         };
       } catch (err) {
         return {
-          content: [{ type: "text", text: `Failed to capture snapshot: ${err.message}` }],
+          content: [{ type: "text", text: `Failed to capture snapshot from ${camera.name}: ${err.message}` }],
           isError: true
         };
       }
@@ -78,12 +111,11 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
-// Handle GET for SSE (optional, some clients use it)
 app.get("/mcp", async (req, res) => {
   res.status(405).json({ error: "Use POST for MCP" });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Scrypted MCP server listening on port ${PORT}`);
-  console.log(`RTSP source: ${RTSP_URL}`);
+  console.log(`Cameras: ${Object.values(CAMERAS).map(c => c.name).join(", ")}`);
 });

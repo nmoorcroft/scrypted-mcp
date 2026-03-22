@@ -1,12 +1,14 @@
 # scrypted-mcp
 
-MCP server that exposes a Scrypted-managed camera to Claude Code via the Model Context Protocol.
+MCP server that exposes all Scrypted-managed cameras to Claude Code via the Model Context Protocol.
 
 ## What it does
 
-Provides a single MCP tool — `get_kitchen_camera` — that captures a live JPEG snapshot from the kitchen camera and returns it as a base64 image. Claude can call this tool to visually inspect the kitchen (e.g. check on the dog, see if someone is home).
+Provides two MCP tools:
+- `list_cameras` — returns all available camera IDs and names
+- `get_camera_snapshot` — captures a live JPEG snapshot from any camera by ID and returns it as a base64 image
 
-The image is captured by pulling a single frame from the Scrypted Rebroadcast Plugin's RTSP stream using ffmpeg.
+Images are captured by pulling a single frame from each camera's Scrypted Rebroadcast Plugin RTSP stream using ffmpeg.
 
 ## Architecture
 
@@ -17,9 +19,9 @@ mcp.darktrain.co.uk  (nginx reverse proxy)
     ↓ HTTP
 home NUC :9584  (scrypted-mcp Docker container)
     ↓ RTSP over TCP
-Scrypted :40081  (rebroadcast stream for kitchen camera, device ID 28)
+Scrypted  (per-camera rebroadcast streams, High quality)
     ↓
-Physical camera
+Physical cameras
 ```
 
 ## MCP endpoint
@@ -27,6 +29,19 @@ Physical camera
 - **Public URL:** `https://mcp.darktrain.co.uk/mcp`
 - **Transport:** Streamable HTTP (POST)
 - **Internal port:** 9584
+
+## Cameras
+
+| Camera ID     | Name         | Scrypted Device ID |
+|---------------|--------------|--------------------|
+| back_garden   | Back Garden  | 30                 |
+| doorbell      | Doorbell     | 31                 |
+| front_drive   | Front Drive  | 26                 |
+| kitchen       | Kitchen      | 28                 |
+| side_gate     | Side Gate    | 29                 |
+| utility_room  | Utility Room | 27                 |
+
+RTSP URLs are stored as environment variables (`RTSP_<CAMERA_ID>`) in `/home/admin/docker/.env` on the NUC. Each camera has its own rebroadcast port and path key (High stream, `rtspServerPathKey-0`).
 
 ## Deployment
 
@@ -44,9 +59,7 @@ The deploy script rsyncs source files to `admin@home:/home/admin/docker/volumes/
 
 | Setting | Value |
 |---|---|
-| RTSP URL | `rtsp://localhost:40081/8fef854beb27bc16` |
-| Scrypted device ID | 28 (kitchen camera) |
-| RTSP path key | `mixin:28:rtspServerPathKey-0` |
 | Server port | 9584 |
 | Network mode | host (shares NUC network namespace) |
 | Timezone | Europe/London |
+| RTSP stream quality | High (`rtspServerPathKey-0`) |
