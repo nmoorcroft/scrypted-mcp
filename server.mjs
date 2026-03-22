@@ -156,18 +156,28 @@ app.post("/mcp", async (req, res) => {
   // List recent events captured via Unifi webhooks
   server.tool(
     "list_events",
-    "List recent events detected by Unifi cameras (e.g. person, animal, vehicle). Each event has a snapshot that can be retrieved with get_event_snapshot.",
-    { limit: z.number().optional().describe("Max number of events to return (default 20)") },
-    async ({ limit = 20 }) => ({
-      content: [{
-        type: "text",
-        text: events.length === 0
-          ? "No events recorded yet."
-          : events.slice(0, limit)
-              .map(e => `${e.id} | ${e.timestamp} | ${e.cameraName} | ${e.event}`)
-              .join("\n")
-      }]
-    })
+    "List recent events detected by Unifi cameras. Returns text metadata only — no images. Use get_event_snapshot to load an image for a specific event. Filter by camera, event type, or time window to avoid processing every event. Known event types from Unifi: person, animal, vehicle, package, ring.",
+    {
+      limit:      z.number().optional().describe("Max events to return (default 20)"),
+      camera:     z.string().optional().describe("Filter by camera ID, e.g. front_drive"),
+      event_type: z.string().optional().describe("Filter by event type, e.g. person, animal, vehicle"),
+      since:      z.string().optional().describe("Only events after this ISO timestamp, e.g. 2026-03-22T20:00:00Z"),
+    },
+    async ({ limit = 20, camera, event_type, since }) => {
+      let filtered = events;
+      if (camera)     filtered = filtered.filter(e => e.camera === camera);
+      if (event_type) filtered = filtered.filter(e => e.event === event_type);
+      if (since)      filtered = filtered.filter(e => e.timestamp >= since);
+      filtered = filtered.slice(0, limit);
+      return {
+        content: [{
+          type: "text",
+          text: filtered.length === 0
+            ? "No events match the filter."
+            : filtered.map(e => `${e.id} | ${e.timestamp} | ${e.cameraName} | ${e.event}`).join("\n")
+        }]
+      };
+    }
   );
 
   // Get the snapshot for a specific event
