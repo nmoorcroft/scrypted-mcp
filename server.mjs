@@ -43,8 +43,8 @@ function saveEventIndex() {
 function startCameraWatcher(cameraId, camera) {
   const outFile = join(LATEST_DIR, `${cameraId}.jpg`);
   const proc = spawn("ffmpeg", [
-    "-rtsp_transport", "tcp", "-i", camera.rtsp,
-    "-vf", "fps=1", "-f", "image2", "-update", "1", "-q:v", "5", "-y", outFile
+    "-rtsp_transport", "tcp", "-skip_frame", "noref", "-i", camera.rtsp,
+    "-vf", "fps=1/10", "-f", "image2", "-update", "1", "-q:v", "5", "-y", outFile
   ]);
   proc.on("close", (code) => {
     console.warn(`Watcher for ${camera.name} exited (${code}), restarting in 5s`);
