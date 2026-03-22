@@ -45,7 +45,7 @@ function startCameraWatcher(cameraId, camera) {
   const proc = spawn("ffmpeg", [
     "-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128",
     "-rtsp_transport", "tcp", "-i", camera.rtsp,
-    "-vf", "fps=1/10,hwdownload,format=nv12",
+    "-vf", "fps=1/10",
     "-f", "image2", "-update", "1", "-q:v", "5", "-y", outFile
   ]);
   proc.on("close", (code) => {
