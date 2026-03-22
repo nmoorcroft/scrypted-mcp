@@ -26,7 +26,7 @@ Physical cameras
 
 ## MCP endpoint
 
-- **Public URL:** `https://mcp.darktrain.co.uk/mcp`
+- **Public URL:** `https://mcp.darktrain.co.uk/camera/mcp`
 - **Transport:** Streamable HTTP (POST)
 - **Internal port:** 9584
 
