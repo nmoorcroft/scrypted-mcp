@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -9,6 +9,7 @@ import { z } from "zod";
 
 const PORT = 9584;
 const SNAPSHOTS_DIR = "/app/snapshots";
+const LATEST_DIR = "/app/latest";
 const EVENTS_FILE = join(SNAPSHOTS_DIR, "events.json");
 const MAX_EVENTS = 100;
 
@@ -25,8 +26,9 @@ const CAMERAS = {
 const missing = Object.entries(CAMERAS).filter(([, c]) => !c.rtsp).map(([k]) => `RTSP_${k.toUpperCase()}`);
 if (missing.length) throw new Error(`Missing environment variables: ${missing.join(", ")}`);
 
-// Ensure snapshots directory exists and load event index
+// Ensure directories exist and load event index
 mkdirSync(SNAPSHOTS_DIR, { recursive: true });
+mkdirSync(LATEST_DIR, { recursive: true });
 let events = [];
 if (existsSync(EVENTS_FILE)) {
   try { events = JSON.parse(readFileSync(EVENTS_FILE, "utf8")); } catch {}
@@ -34,6 +36,20 @@ if (existsSync(EVENTS_FILE)) {
 
 function saveEventIndex() {
   writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2));
+}
+
+// Keep a persistent ffmpeg process per camera, writing the latest frame to disk at ~1fps.
+// This means webhook snapshots are grabbed instantly rather than waiting for RTSP connection overhead.
+function startCameraWatcher(cameraId, camera) {
+  const outFile = join(LATEST_DIR, `${cameraId}.jpg`);
+  const proc = spawn("ffmpeg", [
+    "-rtsp_transport", "tcp", "-i", camera.rtsp,
+    "-vf", "fps=1", "-f", "image2", "-update", "1", "-q:v", "5", "-y", outFile
+  ]);
+  proc.on("close", (code) => {
+    console.warn(`Watcher for ${camera.name} exited (${code}), restarting in 5s`);
+    setTimeout(() => startCameraWatcher(cameraId, camera), 5000);
+  });
 }
 
 function captureSnapshot(rtspUrl) {
@@ -82,7 +98,10 @@ app.get("/webhook", async (req, res) => {
   const filepath = join(SNAPSHOTS_DIR, filename);
 
   try {
-    const imageBuffer = await captureSnapshot(camera.rtsp);
+    const latestFile = join(LATEST_DIR, `${cameraId}.jpg`);
+    const imageBuffer = existsSync(latestFile)
+      ? readFileSync(latestFile)
+      : await captureSnapshot(camera.rtsp); // fallback if watcher hasn't written yet
     writeFileSync(filepath, imageBuffer);
 
     const ev = { id: filename, timestamp, camera: cameraId, cameraName: camera.name, event: eventType };
@@ -230,4 +249,6 @@ app.get("/mcp", async (req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Scrypted MCP server listening on port ${PORT}`);
   console.log(`Cameras: ${Object.values(CAMERAS).map(c => c.name).join(", ")}`);
+  for (const [id, camera] of Object.entries(CAMERAS)) startCameraWatcher(id, camera);
+  console.log("Camera watchers started");
 });
