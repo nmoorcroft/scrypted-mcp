@@ -2,12 +2,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { execFile } from "child_process";
-import { readFileSync, unlinkSync } from "fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { z } from "zod";
 
 const PORT = 9584;
+const SNAPSHOTS_DIR = "/app/snapshots";
+const EVENTS_FILE = join(SNAPSHOTS_DIR, "events.json");
+const MAX_EVENTS = 100;
 
 // Camera definitions — RTSP URLs injected via environment variables
 const CAMERAS = {
@@ -21,6 +24,17 @@ const CAMERAS = {
 
 const missing = Object.entries(CAMERAS).filter(([, c]) => !c.rtsp).map(([k]) => `RTSP_${k.toUpperCase()}`);
 if (missing.length) throw new Error(`Missing environment variables: ${missing.join(", ")}`);
+
+// Ensure snapshots directory exists and load event index
+mkdirSync(SNAPSHOTS_DIR, { recursive: true });
+let events = [];
+if (existsSync(EVENTS_FILE)) {
+  try { events = JSON.parse(readFileSync(EVENTS_FILE, "utf8")); } catch {}
+}
+
+function saveEventIndex() {
+  writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2));
+}
 
 function captureSnapshot(rtspUrl) {
   return new Promise((resolve, reject) => {
@@ -49,6 +63,47 @@ function captureSnapshot(rtspUrl) {
 
 const app = express();
 app.use(express.json());
+
+// Webhook endpoint — called by Unifi automations when an event is detected.
+// URL format: /webhook?camera=<camera_id>&event=<event_type>
+// e.g. /webhook?camera=back_garden&event=person
+app.get("/webhook", async (req, res) => {
+  const { camera: cameraId, event: eventType = "unknown" } = req.query;
+
+  if (!cameraId || !CAMERAS[cameraId]) {
+    console.warn(`Webhook: unknown camera "${cameraId}"`);
+    return res.status(400).json({ error: `Unknown camera: ${cameraId}. Available: ${Object.keys(CAMERAS).join(", ")}` });
+  }
+
+  const camera = CAMERAS[cameraId];
+  const timestamp = new Date().toISOString();
+  const safeTs = timestamp.replace(/[:.]/g, "-");
+  const filename = `${safeTs}_${cameraId}_${eventType}.jpg`;
+  const filepath = join(SNAPSHOTS_DIR, filename);
+
+  try {
+    const imageBuffer = await captureSnapshot(camera.rtsp);
+    writeFileSync(filepath, imageBuffer);
+
+    const ev = { id: filename, timestamp, camera: cameraId, cameraName: camera.name, event: eventType };
+    events.unshift(ev);
+
+    // Trim to MAX_EVENTS, deleting old snapshot files
+    if (events.length > MAX_EVENTS) {
+      const removed = events.splice(MAX_EVENTS);
+      for (const old of removed) {
+        try { unlinkSync(join(SNAPSHOTS_DIR, old.id)); } catch {}
+      }
+    }
+
+    saveEventIndex();
+    console.log(`Webhook: ${eventType} on ${camera.name} — saved ${filename}`);
+    res.json({ ok: true, event: ev });
+  } catch (err) {
+    console.error(`Webhook snapshot failed for ${camera.name}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post("/mcp", async (req, res) => {
   const server = new McpServer({ name: "scrypted-cameras", version: "2.0.0" });
@@ -92,6 +147,54 @@ app.post("/mcp", async (req, res) => {
       } catch (err) {
         return {
           content: [{ type: "text", text: `Failed to capture snapshot from ${camera.name}: ${err.message}` }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // List recent events captured via Unifi webhooks
+  server.tool(
+    "list_events",
+    "List recent events detected by Unifi cameras (e.g. person, animal, vehicle). Each event has a snapshot that can be retrieved with get_event_snapshot.",
+    { limit: z.number().optional().describe("Max number of events to return (default 20)") },
+    async ({ limit = 20 }) => ({
+      content: [{
+        type: "text",
+        text: events.length === 0
+          ? "No events recorded yet."
+          : events.slice(0, limit)
+              .map(e => `${e.id} | ${e.timestamp} | ${e.cameraName} | ${e.event}`)
+              .join("\n")
+      }]
+    })
+  );
+
+  // Get the snapshot for a specific event
+  server.tool(
+    "get_event_snapshot",
+    "Get the stored snapshot image for a specific Unifi-detected event. Use list_events first to get event IDs.",
+    { event_id: z.string().describe("Event ID from list_events") },
+    async ({ event_id }) => {
+      const ev = events.find(e => e.id === event_id);
+      if (!ev) {
+        return {
+          content: [{ type: "text", text: `Unknown event: ${event_id}` }],
+          isError: true
+        };
+      }
+      try {
+        const imageBuffer = readFileSync(join(SNAPSHOTS_DIR, ev.id));
+        const camera = CAMERAS[ev.camera];
+        return {
+          content: [
+            { type: "text", text: `${ev.cameraName} | ${ev.event} | ${ev.timestamp}${camera ? `\n${camera.description}` : ""}` },
+            { type: "image", data: imageBuffer.toString("base64"), mimeType: "image/jpeg" }
+          ]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Failed to read snapshot for event ${event_id}: ${err.message}` }],
           isError: true
         };
       }

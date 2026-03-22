@@ -4,11 +4,21 @@ MCP server that exposes all Scrypted-managed cameras to Claude Code via the Mode
 
 ## What it does
 
-Provides two MCP tools:
+Provides four MCP tools:
 - `list_cameras` — returns all available camera IDs and names
 - `get_camera_snapshot` — captures a live JPEG snapshot from any camera by ID and returns it as a base64 image
+- `list_events` — lists recent Unifi-detected events (person, animal, vehicle, etc.) with timestamps
+- `get_event_snapshot` — retrieves the stored snapshot for a specific event
 
 Images are captured by pulling a single frame from each camera's Scrypted Rebroadcast Plugin RTSP stream using ffmpeg.
+
+## Unifi webhook integration
+
+Unifi automations call `GET /camera/webhook?camera=<camera_id>&event=<event_type>` when something interesting is detected. The server captures and stores a snapshot at that moment.
+
+- **Webhook URL format:** `https://mcp.darktrain.co.uk/camera/webhook?camera=back_garden&event=person`
+- Snapshots stored in `/app/snapshots/` inside the container (lost on rebuild — add a volume for persistence)
+- Capped at 100 events (oldest auto-deleted)
 
 ## Architecture
 
